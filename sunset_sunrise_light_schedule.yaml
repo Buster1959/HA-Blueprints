@@ -1,0 +1,103 @@
+blueprint:
+  name: Sunset/Sunrise Bounded Light Schedule
+  description: >
+    Turns lights on at sunset and off at a fixed evening cutoff (default
+    23:00) — but only if sunset happens before that cutoff.
+    Turns lights on at a fixed morning time (default 07:00) and off at
+    sunrise — but only if sunrise happens after that time.
+    This avoids turning lights on late in summer when the sun hasn't set
+    by cutoff, or forcing a morning "on" when it's already sunrise before
+    your morning time.
+  domain: automation
+  source_url: https://github.com/your-repo/sunset-sunrise-light-blueprint
+  input:
+    light_target:
+      name: Lights
+      description: Light(s) or switch(es) to control
+      selector:
+        target:
+          entity:
+            domain:
+              - light
+              - switch
+
+    evening_off_time:
+      name: Evening Off Time
+      description: Fixed time lights turn off in the evening
+      default: "23:00:00"
+      selector:
+        time:
+
+    morning_on_time:
+      name: Morning On Time
+      description: Fixed time lights turn on in the morning
+      default: "07:00:00"
+      selector:
+        time:
+
+mode: single
+
+trigger:
+  - platform: sun
+    event: sunset
+    id: sunset
+  - platform: time
+    at: !input evening_off_time
+    id: evening_cutoff
+  - platform: time
+    at: !input morning_on_time
+    id: morning_on
+  - platform: sun
+    event: sunrise
+    id: sunrise
+
+condition: []
+
+action:
+  - choose:
+      # Sunset happened -> turn lights on, but only if it's still before
+      # the evening cutoff (guards against sunset landing after cutoff
+      # in midsummer, at high latitudes)
+      - conditions:
+          - condition: trigger
+            id: sunset
+          - condition: time
+            before: !input evening_off_time
+        sequence:
+          - action: homeassistant.turn_on
+            target: !input light_target
+
+      # Fixed evening cutoff -> always turn off, regardless of how the
+      # lights came on
+      - conditions:
+          - condition: trigger
+            id: evening_cutoff
+        sequence:
+          - action: homeassistant.turn_off
+            target: !input light_target
+
+      # Fixed morning time -> turn lights on, but only if the sun hasn't
+      # risen yet (guards against sunrise landing before this time in
+      # midsummer)
+      - conditions:
+          - condition: trigger
+            id: morning_on
+          - condition: sun
+            after: sunset
+            before: sunrise
+        sequence:
+          - action: homeassistant.turn_on
+            target: !input light_target
+
+      # Sunrise happened -> turn lights off, but only if it's after the
+      # fixed morning time (guards against sunrise landing before that
+      # time, so we don't immediately kill lights that were never turned
+      # on by the morning trigger)
+      - conditions:
+          - condition: trigger
+            id: sunrise
+          - condition: time
+            after: !input morning_on_time
+        sequence:
+          - action: homeassistant.turn_off
+            target: !input light_target
