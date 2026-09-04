@@ -2,8 +2,8 @@ blueprint:
   name: HVAC Cutoff on Door/Window Open
   description: >
     Turns off an HVAC relay/actuator when any door or window sensor in a room
-    opens, and turns it back on once all sensors are closed again (with an
-    optional delay to avoid rapid on/off cycling).
+    opens, and turns it back on once all sensors are closed again (with a
+    delay to avoid rapid on/off cycling).
   domain: automation
   source_url: https://github.com/your-repo/hvac-cutoff-blueprint
   input:
@@ -59,9 +59,7 @@ trigger:
   - platform: state
     entity_id: !input door_window_sensors
     to: "off"
-    for:
-      seconds: !input restore_delay
-    id: closed_and_settled
+    id: closed
 
 condition: []
 
@@ -84,14 +82,22 @@ action:
                   message: >
                     {{ room_name }}: door/window opened — HVAC cut.
 
-      # All sensors closed and stayed closed for restore_delay -> restore HVAC
+      # A sensor just closed and every sensor currently reads closed ->
+      # wait out the settle delay, then re-check before restoring HVAC.
+      # If any sensor reopens during the wait, mode: restart cancels this
+      # branch and the "opened" branch above runs instead.
       - conditions:
           - condition: trigger
-            id: closed_and_settled
+            id: closed
           - condition: state
             entity_id: !input door_window_sensors
             state: "off"
         sequence:
+          - delay:
+              seconds: !input restore_delay
+          - condition: state
+            entity_id: !input door_window_sensors
+            state: "off"
           - service: switch.turn_on
             target:
               entity_id: !input hvac_actuator
