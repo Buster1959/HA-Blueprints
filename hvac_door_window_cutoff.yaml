@@ -4,6 +4,8 @@ blueprint:
     Turns off an HVAC relay/actuator when any door or window sensor in a room
     stays open longer than a grace period (so brief in/out doesn't cut power),
     and turns it back on immediately once all sensors are closed again.
+    Sensors that go unavailable/unknown are ignored for the closed check and
+    raise a persistent notification until they recover.
   domain: automation
   source_url: https://github.com/your-repo/hvac-cutoff-blueprint
   input:
@@ -68,45 +70,94 @@ trigger:
     entity_id: !input door_window_sensors
     to: "off"
     id: closed
+  # A sensor dropped off (offline/removed battery/zigbee drop, etc).
+  - platform: state
+    entity_id: !input door_window_sensors
+    to:
+      - "unavailable"
+      - "unknown"
+    id: sensor_unavailable
+  # A previously-dead sensor is reporting again.
+  - platform: state
+    entity_id: !input door_window_sensors
+    from:
+      - "unavailable"
+      - "unknown"
+    id: sensor_recovered
 
 condition: []
 
-action:
-  - choose:
-      # A sensor stayed open past the grace period -> cut HVAC.
-      - conditions:
-          - condition: trigger
-            id: opened_and_settled
-        sequence:
-          - service: switch.turn_off
-            target:
-              entity_id: !input hvac_actuator
-          - if:
-              - condition: template
-                value_template: "{{ notify_on_trigger != '' }}"
-            then:
-              - service: "{{ notify_on_trigger }}"
-                data:
-                  message: >
-                    {{ room_name }}: door/window left open — HVAC cut.
+variables:
+  sensors: !input door_window_sensors
 
-      # A sensor just closed and every sensor now reads closed -> restore
-      # HVAC immediately, no delay.
-      - conditions:
+action:
+  # A sensor stayed open past the grace period -> cut HVAC.
+  - if:
+      - condition: trigger
+        id: opened_and_settled
+    then:
+      - service: switch.turn_off
+        target:
+          entity_id: !input hvac_actuator
+      - if:
+          - condition: template
+            value_template: "{{ notify_on_trigger != '' }}"
+        then:
+          - service: "{{ notify_on_trigger }}"
+            data:
+              message: >
+                {{ room_name }}: door/window left open — HVAC cut.
+
+  # A sensor just closed, OR a sensor went unavailable (fail-open: better to
+  # heat/cool an empty room than leave HVAC off indefinitely because a
+  # sensor died and nobody's on-site to notice). Either way, if no sensor
+  # currently reads "on" — unavailable/unknown ones are ignored, not treated
+  # as open or closed — restore HVAC immediately, no delay.
+  - if:
+      - condition: or
+        conditions:
           - condition: trigger
             id: closed
-          - condition: state
-            entity_id: !input door_window_sensors
-            state: "off"
-        sequence:
-          - service: switch.turn_on
-            target:
-              entity_id: !input hvac_actuator
-          - if:
-              - condition: template
-                value_template: "{{ notify_on_trigger != '' }}"
-            then:
-              - service: "{{ notify_on_trigger }}"
-                data:
-                  message: >
-                    {{ room_name }}: all doors/windows closed — HVAC restored.
+          - condition: trigger
+            id: sensor_unavailable
+      - condition: template
+        value_template: >
+          {{ expand(sensors) | selectattr('state', 'eq', 'on') | list | length == 0 }}
+    then:
+      - service: switch.turn_on
+        target:
+          entity_id: !input hvac_actuator
+      - if:
+          - condition: template
+            value_template: "{{ notify_on_trigger != '' }}"
+        then:
+          - service: "{{ notify_on_trigger }}"
+            data:
+              message: >
+                {{ room_name }}: all doors/windows closed (or sensor lost) —
+                HVAC restored.
+
+  # A sensor went unavailable/unknown -> flag it so it doesn't silently get
+  # ignored forever, even though HVAC fails open around it.
+  - if:
+      - condition: trigger
+        id: sensor_unavailable
+    then:
+      - service: persistent_notification.create
+        data:
+          notification_id: "hvac_cutoff_dead_sensor_{{ trigger.entity_id }}"
+          title: "HVAC Cutoff: dead sensor ({{ room_name }})"
+          message: >
+            {{ state_attr(trigger.entity_id, 'friendly_name') or trigger.entity_id }}
+            is now {{ trigger.to_state.state }}. It's being ignored for the
+            HVAC cutoff/restore logic (HVAC defaults ON when unsure) until it
+            reports on/off again.
+
+  # A dead sensor came back -> clear its notification.
+  - if:
+      - condition: trigger
+        id: sensor_recovered
+    then:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: "hvac_cutoff_dead_sensor_{{ trigger.entity_id }}"
