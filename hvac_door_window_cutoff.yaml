@@ -2,8 +2,8 @@ blueprint:
   name: HVAC Cutoff on Door/Window Open
   description: >
     Turns off an HVAC relay/actuator when any door or window sensor in a room
-    opens, and turns it back on once all sensors are closed again (with a
-    delay to avoid rapid on/off cycling).
+    stays open longer than a grace period (so brief in/out doesn't cut power),
+    and turns it back on immediately once all sensors are closed again.
   domain: automation
   source_url: https://github.com/your-repo/hvac-cutoff-blueprint
   input:
@@ -31,9 +31,11 @@ blueprint:
         entity:
           domain: switch
 
-    restore_delay:
-      name: Restore Delay
-      description: How long all sensors must stay closed before HVAC turns back on
+    open_grace_period:
+      name: Open Grace Period
+      description: >
+        How long a sensor must stay open before HVAC is cut. Lets people walk
+        in/out without triggering a cutoff.
       default: 120
       selector:
         number:
@@ -52,10 +54,16 @@ blueprint:
 mode: restart
 
 trigger:
+  # A sensor has been open continuously for open_grace_period -> cut HVAC.
+  # If it closes again before the grace period elapses, this simply never
+  # fires for that entity (the timer resets automatically).
   - platform: state
     entity_id: !input door_window_sensors
     to: "on"
-    id: opened
+    for:
+      seconds: !input open_grace_period
+    id: opened_and_settled
+  # Any sensor just closed -> re-check the whole group immediately.
   - platform: state
     entity_id: !input door_window_sensors
     to: "off"
@@ -65,10 +73,10 @@ condition: []
 
 action:
   - choose:
-      # Any sensor just opened -> cut HVAC immediately
+      # A sensor stayed open past the grace period -> cut HVAC.
       - conditions:
           - condition: trigger
-            id: opened
+            id: opened_and_settled
         sequence:
           - service: switch.turn_off
             target:
@@ -80,12 +88,10 @@ action:
               - service: "{{ notify_on_trigger }}"
                 data:
                   message: >
-                    {{ room_name }}: door/window opened — HVAC cut.
+                    {{ room_name }}: door/window left open — HVAC cut.
 
-      # A sensor just closed and every sensor currently reads closed ->
-      # wait out the settle delay, then re-check before restoring HVAC.
-      # If any sensor reopens during the wait, mode: restart cancels this
-      # branch and the "opened" branch above runs instead.
+      # A sensor just closed and every sensor now reads closed -> restore
+      # HVAC immediately, no delay.
       - conditions:
           - condition: trigger
             id: closed
@@ -93,11 +99,6 @@ action:
             entity_id: !input door_window_sensors
             state: "off"
         sequence:
-          - delay:
-              seconds: !input restore_delay
-          - condition: state
-            entity_id: !input door_window_sensors
-            state: "off"
           - service: switch.turn_on
             target:
               entity_id: !input hvac_actuator
