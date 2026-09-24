@@ -1,8 +1,11 @@
 blueprint:
   name: Motion + Luminance Light Control
   description: >
-    Turns a light ON when motion is detected AND the ambient luminance is below
-    a configurable lower threshold (dark enough to need light).
+    Turns a light ON when either of these becomes true:
+      - Motion is detected while the ambient luminance is already below a
+        configurable lower threshold, OR
+      - The luminance drops below that lower threshold while motion is
+        already active.
  
     Turns the light OFF when either of these becomes true:
       - No motion has been detected for a configurable duration, OR
@@ -30,12 +33,17 @@ blueprint:
           device_class: illuminance
  
     light_target:
-      name: Light(s) to control
-      description: The light entity/entities (or area) to turn on and off.
+      name: Light(s)/switch(es) to control
+      description: >
+        The entity/entities (or area) to turn on and off. Works with light
+        entities or switch entities (e.g. a smart plug/switch controlling a
+        light, such as switch.office_office_lights).
       selector:
         target:
           entity:
-            domain: light
+            domain:
+              - light
+              - switch
  
     lower_luminance:
       name: Lower luminance threshold
@@ -102,19 +110,37 @@ trigger:
     above: !input upper_luminance
     id: too_bright
  
+  - trigger: numeric_state
+    entity_id: !input illuminance_sensor
+    below: !input lower_luminance
+    id: getting_dark
+ 
 condition: []
  
 action:
   - choose:
-      # Motion detected AND it's dark enough -> turn the light ON
+      # Turn the light ON when either:
+      #  - motion is detected while it's already dark enough, OR
+      #  - it becomes dark enough while motion is already active
       - conditions:
-          - condition: trigger
-            id: motion_detected
-          - condition: numeric_state
-            entity_id: !input illuminance_sensor
-            below: !input lower_luminance
+          - condition: or
+            conditions:
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: motion_detected
+                  - condition: numeric_state
+                    entity_id: !input illuminance_sensor
+                    below: !input lower_luminance
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: getting_dark
+                  - condition: state
+                    entity_id: !input motion_sensor
+                    state: "on"
         sequence:
-          - action: light.turn_on
+          - action: homeassistant.turn_on
             target: !input light_target
  
       # No motion for the configured duration, OR too bright -> turn the light OFF
@@ -124,5 +150,5 @@ action:
               - no_motion_timeout
               - too_bright
         sequence:
-          - action: light.turn_off
+          - action: homeassistant.turn_off
             target: !input light_target
