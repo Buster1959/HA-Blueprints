@@ -1,0 +1,128 @@
+blueprint:
+  name: Motion + Luminance Light Control
+  description: >
+    Turns a light ON when motion is detected AND the ambient luminance is below
+    a configurable lower threshold (dark enough to need light).
+ 
+    Turns the light OFF when either of these becomes true:
+      - No motion has been detected for a configurable duration, OR
+      - The luminance rises above a configurable upper threshold (bright enough
+        that the light is no longer needed).
+ 
+    All three values (lower luminance threshold, upper luminance threshold, and
+    the no-motion wait duration) are configurable inputs.
+  domain: automation
+  input:
+    motion_sensor:
+      name: Motion sensor
+      description: The motion sensor that triggers the light to turn on/off.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+ 
+    illuminance_sensor:
+      name: Illuminance sensor
+      description: The sensor reporting ambient light level, in lux.
+      selector:
+        entity:
+          domain: sensor
+          device_class: illuminance
+ 
+    light_target:
+      name: Light(s) to control
+      description: The light entity/entities (or area) to turn on and off.
+      selector:
+        target:
+          entity:
+            domain: light
+ 
+    lower_luminance:
+      name: Lower luminance threshold
+      description: >
+        The light turns ON when motion is detected and the illuminance reading
+        is below this value (lux). Lower = requires it to be darker before the
+        light turns on.
+      default: 300
+      selector:
+        number:
+          min: 0
+          max: 10000
+          step: 10
+          unit_of_measurement: "lx"
+          mode: box
+ 
+    upper_luminance:
+      name: Upper luminance threshold
+      description: >
+        The light turns OFF whenever the illuminance reading rises above this
+        value (lux), regardless of motion. Should be greater than the lower
+        threshold.
+      default: 500
+      selector:
+        number:
+          min: 0
+          max: 10000
+          step: 10
+          unit_of_measurement: "lx"
+          mode: box
+ 
+    no_motion_wait:
+      name: No-motion wait time
+      description: >
+        Turn the light OFF after motion has been clear (no detection) for this
+        many minutes.
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 240
+          step: 1
+          unit_of_measurement: "minutes"
+          mode: box
+ 
+mode: restart
+max_exceeded: silent
+ 
+trigger:
+  - trigger: state
+    entity_id: !input motion_sensor
+    to: "on"
+    id: motion_detected
+ 
+  - trigger: state
+    entity_id: !input motion_sensor
+    to: "off"
+    for:
+      minutes: !input no_motion_wait
+    id: no_motion_timeout
+ 
+  - trigger: numeric_state
+    entity_id: !input illuminance_sensor
+    above: !input upper_luminance
+    id: too_bright
+ 
+condition: []
+ 
+action:
+  - choose:
+      # Motion detected AND it's dark enough -> turn the light ON
+      - conditions:
+          - condition: trigger
+            id: motion_detected
+          - condition: numeric_state
+            entity_id: !input illuminance_sensor
+            below: !input lower_luminance
+        sequence:
+          - action: light.turn_on
+            target: !input light_target
+ 
+      # No motion for the configured duration, OR too bright -> turn the light OFF
+      - conditions:
+          - condition: trigger
+            id:
+              - no_motion_timeout
+              - too_bright
+        sequence:
+          - action: light.turn_off
+            target: !input light_target
